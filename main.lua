@@ -1,123 +1,278 @@
+-- =========================================================
+-- MEJS 子追脚本（适配远程加载 / 稳定防崩溃版）
+-- =========================================================
 local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
 local Workspace = game:GetService("Workspace")
-local StarterGui = game:GetService("StarterGui")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
 
-local function notify(title, text)
-    pcall(function()
-        StarterGui:SetCore("SendNotification", { Title = title, Text = text, Duration = 2 })
-    end)
+local FOVRadius = 120
+local ShowFOV = false
+local BulletTP = false
+local ESPEnabled = false
+local WallCheck = false
+local TeamCheck = false
+local LockNPC = false
+local TargetPart = "Head"
+local SelectedTarget = nil
+
+-- 绘图对象
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 1
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+FOVCircle.Filled = false
+FOVCircle.Radius = FOVRadius
+FOVCircle.Visible = false
+
+local AimLine = Drawing.new("Line")
+AimLine.Color = Color3.fromRGB(255, 255, 0)
+AimLine.Thickness = 1.5
+AimLine.Visible = false
+
+local NameText = Drawing.new("Text")
+NameText.Size = 16
+NameText.Color = Color3.fromRGB(255, 255, 255)
+NameText.Center = true
+NameText.Outline = true
+NameText.OutlineColor = Color3.fromRGB(0, 0, 0)
+NameText.Visible = false
+
+local HealthText = Drawing.new("Text")
+HealthText.Size = 13
+HealthText.Color = Color3.fromRGB(255, 255, 255)
+HealthText.Center = true
+HealthText.Outline = true
+HealthText.OutlineColor = Color3.fromRGB(0, 0, 0)
+HealthText.Visible = false
+
+local ESPTable = {}
+local PlayerListCache = {}
+local LastUpdate = 0
+
+local function GetPlayers()
+    if tick() - LastUpdate < 0.5 then return PlayerListCache end
+    local list = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character then list[player.Character.Name] = true end
+    end
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj:FindFirstChild("Humanoid") and obj:FindFirstChild("Head") and not list[obj.Name] then
+            table.insert(list, obj)
+        end
+    end
+    PlayerListCache = list
+    LastUpdate = tick()
+    return list
 end
 
-notify("yuh5710t专属", "极致纯净版启动成功！")
+local function GetTargetPart(character)
+    if not character then return nil end
+    if TargetPart == "Head" then return character:FindFirstChild("Head") end
+    local torso = character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso") or character:FindFirstChild("HumanoidRootPart")
+    return torso or character:FindFirstChild("Head")
+end
 
-local itemMap = {}
-local function updateCache()
-    if not Workspace:FindFirstChild("Game") then return end
-    local itemPickup = Workspace.Game.Entities:FindFirstChild("ItemPickup")
-    if not itemPickup then itemMap = {} return end
-    itemMap = {}
-    for _, model in pairs(itemPickup:GetChildren()) do
-        for _, v in pairs(model:GetChildren()) do
-            if v:IsA("MeshPart") or v:IsA("Part") then
-                local prompt = v:FindFirstChildOfClass("ProximityPrompt")
-                if prompt and prompt.ObjectText then
-                    itemMap[prompt.ObjectText] = { part = v, prompt = prompt }
-                end
+local function IsTeammate(player)
+    if not LocalPlayer.TeamColor or not player.TeamColor then return false end
+    return LocalPlayer.TeamColor == player.TeamColor
+end
+
+local function GetRaycastIgnoreList()
+    local ignore = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character then
+            for _, part in ipairs(player.Character:GetChildren()) do
+                if part:IsA("BasePart") then table.insert(ignore, part) end
             end
         end
     end
+    return ignore
 end
 
-task.spawn(function()
-    while true do
-        pcall(updateCache)
-        task.wait(2)
-    end
-end)
-
-local function Autoitem(itemName)
-    local itemData = itemMap[itemName]
-    if not itemData then return end
-    local char = LocalPlayer.Character
-    if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    root.CFrame = itemData.part.CFrame
-    itemData.prompt.RequiresLineOfSight = false
-    itemData.prompt.HoldDuration = 0
-    fireproximityprompt(itemData.prompt)
+local function IsWallBetween(part)
+    if not LocalPlayer.Character then return false end
+    local origin = LocalPlayer.Character:FindFirstChild("Head")
+    if not origin then return false end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = GetRaycastIgnoreList()
+    local result = Workspace:Raycast(origin.Position, (part.Position - origin.Position).Unit * (part.Position - origin.Position).Magnitude, params)
+    if result then return not result.Instance:IsDescendantOf(part.Parent) end
+    return false
 end
 
-local function collectNearbyCash()
-    local char = LocalPlayer.Character
-    if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    local cb = Workspace:FindFirstChild("Game") and Workspace.Game.Entities:FindFirstChild("CashBundle")
-    if not cb then return end
-    for _, cash in pairs(cb:GetChildren()) do
-        local part = cash:FindFirstChildOfClass("Part")
-        if part and (root.Position - part.Position).Magnitude <= 90 then
-            local cd = cash:FindFirstChildOfClass("ClickDetector")
-            if cd then fireclickdetector(cd) end
-        end
-    end
-end
-
--- 自动捡气球、印钞机、捡钱
-task.spawn(function()
-    while true do
-        pcall(function()
-            collectNearbyCash()
-            for _, name in ipairs({"Money Printer", "Bunny Balloon", "Ghost Balloon", "Clover Balloon", "Bat Balloon", "Gold Clover Balloon", "Golden Rose", "Black Rose", "Heart Balloon"}) do
-                Autoitem(name)
-            end
-        end)
-        task.wait(0.1)
-    end
-end)
-
--- 自动卖东西
-task.spawn(function()
-    while true do
-        pcall(function()
-            local Signal = require(ReplicatedStorage.devv).load("Signal")
-            local itemModule = require(ReplicatedStorage.devv).load("v3item")
-            for _, v in pairs(itemModule.inventory.items) do
-                Signal.FireServer("equip", v.guid)
-                Signal.FireServer("sellItem", v.guid)
-            end
-        end)
-        task.wait(1)
-    end
-end)
-
--- 自动买面罩防踢
-task.spawn(function()
-    while true do
-        pcall(function()
-            local char = LocalPlayer.Character
-            if char and not char:FindFirstChild("Black Bandana") then
-                local root = char:FindFirstChild("HumanoidRootPart")
-                if root then
-                    root.CFrame = CFrame.new(604.114014, 5.09485245, -1018.1275)
-                    task.wait(0.5)
-                    local Signal = require(ReplicatedStorage.devv).load("Signal")
-                    local b1 = require(ReplicatedStorage.devv).load("v3item").inventory.items
-                    Signal.InvokeServer("attemptPurchase", "Black Bandana")
-                    task.wait(0.3)
-                    for _, v in pairs(b1) do
-                        if v.name == "Black Bandana" then
-                            Signal.FireServer("equip", v.guid)
-                            Signal.FireServer("wearMask", v.guid)
-                            break
+local function GetClosestTarget()
+    local mouse = UserInputService:GetMouseLocation()
+    local closest = nil
+    local closestDist = FOVRadius
+    
+    if LockNPC then
+        for _, model in ipairs(GetPlayers()) do
+            if model.Parent then
+                local humanoid = model:FindFirstChild("Humanoid")
+                if humanoid and humanoid.Health > 0 then
+                    local part = GetTargetPart(model)
+                    if part and (not WallCheck or not IsWallBetween(part)) then
+                        local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
+                        if onScreen then
+                            local dist = (Vector2.new(pos.X, pos.Y) - mouse).Magnitude
+                            if dist < closestDist then
+                                closestDist = dist
+                                closest = model
+                            end
                         end
                     end
                 end
             end
-        end)
-        task.wait(3)
+        end
+    else
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character then
+                if not (TeamCheck and IsTeammate(player)) then
+                    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+                    if humanoid and humanoid.Health > 0 then
+                        local part = GetTargetPart(player.Character)
+                        if part and (not WallCheck or not IsWallBetween(part)) then
+                            local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
+                            if onScreen then
+                                local dist = (Vector2.new(pos.X, pos.Y) - mouse).Magnitude
+                                if dist < closestDist then
+                                    closestDist = dist
+                                    closest = player
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+local function GetPlayerColor(player)
+    if player.TeamColor then return player.TeamColor.Color end
+    return Color3.fromRGB(255, 255, 255)
+end
+
+local function CreateESP(player)
+    if player == LocalPlayer then return end
+    local character = player.Character
+    if not character then return end
+    
+    local highlight = Instance.new("Highlight")
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.FillTransparency = 0.5
+    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+    highlight.FillColor = GetPlayerColor(player)
+    highlight.Enabled = ESPEnabled
+    highlight.Adornee = character
+    highlight.Parent = character
+    
+    local billboard = Instance.new("BillboardGui")
+    billboard.AlwaysOnTop = true
+    billboard.Size = UDim2.new(0, 800, 0, 50)
+    billboard.ExtentsOffset = Vector3.new(0, 1, 0)
+    billboard.Parent = character
+    
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.Font = Enum.Font.SciFi
+    label.TextSize = 11
+    label.TextColor3 = GetPlayerColor(player)
+    label.Text = player.DisplayName
+    label.Visible = ESPEnabled
+    label.Parent = billboard
+    
+    local conn = player.CharacterAdded:Connect(function()
+        task.wait(0.3)
+        pcall(function() highlight:Destroy(); billboard:Destroy() end)
+        CreateESP(player)
+        conn:Disconnect()
+    end)
+    
+    ESPTable[player] = { hl = highlight, bb = billboard, conn = conn }
+end
+
+local function UpdateESP(player)
+    if player == LocalPlayer then return end
+    local character = player.Character
+    if not character then return end
+    
+    if TeamCheck and IsTeammate(player) then
+        if ESPTable[player] then
+            pcall(function()
+                ESPTable[player].hl:Destroy()
+                ESPTable[player].bb:Destroy()
+                if ESPTable[player].conn then ESPTable[player].conn:Disconnect() end
+            end)
+            ESPTable[player] = nil
+        end
+        return
+    end
+    
+    if not ESPTable[player] then
+        CreateESP(player)
+    else
+        local data = ESPTable[player]
+        if data.hl and data.hl.Parent then
+            data.hl.FillColor = GetPlayerColor(player)
+            data.hl.Enabled = ESPEnabled
+        else
+            pcall(function() data.hl:Destroy(); data.bb:Destroy() end)
+            CreateESP(player)
+        end
+        if data.bb and data.bb.Parent then
+            local label = data.bb:FindFirstChildOfClass("TextLabel")
+            if label then
+                label.Text = player.DisplayName
+                label.TextColor3 = GetPlayerColor(player)
+                label.Visible = ESPEnabled
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while task.wait(0.5) do
+        if ESPEnabled then
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer then UpdateESP(player) end
+            end
+        else
+            for _, data in pairs(ESPTable) do
+                if data.hl then data.hl.Enabled = false end
+                if data.bb then
+                    local label = data.bb:FindFirstChildOfClass("TextLabel")
+                    if label then label.Visible = false end
+                end
+            end
+        end
     end
 end)
+
+-- 核心拦截：子弹追踪 (加了防崩溃保护)
+pcall(function()
+    local oldNamecall
+    local mt = getrawmetatable(game)
+    if mt then
+        oldNamecall = mt.__namecall
+        setreadonly(mt, false)
+        mt.__namecall = function(self, ...)
+            local method = getnamecallmethod()
+            if BulletTP and (method == "Raycast" or method == "FindPartOnRay") and self == Workspace then
+                if SelectedTarget and SelectedTarget.Character then
+                    local part = GetTargetPart(SelectedTarget.Character)
+                    if part then
+                        return { Instance = part, Position = part.Position, Normal = (part.Position - (...)[2]).Unit, Material = Enum.Material.Plastic }
+                    end
+                end
+                if not SelectedTarget and (...)[2].Magnitude > 3 then
+                    local target = GetClosestTarget()
+                    if target then
+                        local char = (LockNPC and target) or (target.Character)
+                        if char then
+                     
